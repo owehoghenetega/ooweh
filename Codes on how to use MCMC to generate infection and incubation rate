@@ -1,0 +1,88 @@
+# Load necessary packages
+library(deSolve)
+library(MCMCpack)
+
+# Total population
+N <- 10000
+
+# Initial values
+initial_state <- c(S = 9990, E= 3, I = 7, R = 0)
+
+# Time points (days)
+time <- seq(0, 15, by = 1)
+
+# Observed number of infected people
+obs_infected <- c(7, 12, 23, 41, 68, 109, 140, 160, 155, 140, 120, 131, 135, 142, 155, 160)
+
+# Fixed recovery rate (1/7 days)
+gamma <- 1/7
+alpha <- 1/5  # assuming incubation period is 5 days
+
+# Define the SIR model as a function
+seir_model <- function(time, state, parameters) {
+  with(as.list(c(state, parameters)), {
+    dS <- -beta * S * I / N
+    dE <- beta * S * I / N - alpha * E
+    dI <-  alpha*E - gamma * I
+    dR <- gamma * I
+    return(list(c(dS, dE, dI, dR)))
+  })
+}
+log_likelihood <- function(params) {
+  beta <- params[1]
+  alpha <- params[2]
+  
+  # Restrict beta and alpha to reasonable ranges
+  if (is.na(beta) || is.na(alpha) || beta <= 0 || beta >= 3 || alpha <= 0 || alpha >= 2) {
+    return(-1e10)  # Use a large negative number instead of -Inf
+  }
+  
+  parameters <- c(beta = beta, alpha = alpha, gamma = gamma)
+  
+  # Solve the model
+  out <- tryCatch({
+    ode(y = initial_state, times = time, func = seir_model, parms = parameters)
+  }, error = function(e) return(NULL))
+  
+  # Handle failed ODE solver
+  if (is.null(out) || any(is.na(out))) {
+    return(-1e10)
+  }
+  
+  I_predicted <- out[, "I"]
+  
+  # Validate output
+  if (length(I_predicted) != length(obs_infected) || any(is.na(I_predicted)) || any(!is.finite(I_predicted))) {
+    return(-1e10)
+  }
+  
+  # Log-likelihood under normal error model
+  log_lik <- sum(dnorm(obs_infected, mean = I_predicted, sd = 16, log = TRUE))
+  
+  if (!is.finite(log_lik)) return(-1e10)
+  
+  return(log_lik)
+}
+
+# Run MCMC
+set.seed(123)
+mcmc_result <- MCMCmetrop1R(
+  fun = log_likelihood,
+  theta.init = c(0.4,0.2),# initial guess for beta and alpha
+  mcmc = 10000,          # number of iterations
+  burnin = 1000,         # discard initial samples
+  thin = 10,             # thinning
+  verbose = 0
+)
+
+# Plot and summarize results
+plot(mcmc_result, main = "Posterior Distribution of Beta")
+plot(mcmc_result, main = "Posterior Distribution of Alpha")
+summary(mcmc_result)
+
+# Most likely value for beta
+mean_beta <- mean(mcmc_result[, 1])
+mean_alpha <- mean(mcmc_result[, 2])
+cat("Estimated beta:", mean_beta, "\n")
+cat("Estimated alpha:", mean_alpha, "\n")
+
